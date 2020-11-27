@@ -6,13 +6,21 @@ For each IP address in the list the script will scan the ports on that host, and
 the login for detected services.
 
 The script will take in the following parameters:
+
   -t -> Filename for a file containing a list of IP addresses
+  
   -p -> Ports to scan on the target host
+  
   -u -> A username
+  
   -f -> Filename for a file containing a list of passwords
+  
 Example usage would look like this:
+
   ./net_attack.py -t my_ip_list.txt -p 22,23,25,80 -u admin -f my_password_list.txt
+  
   ./net_attack.py -t ip_list.txt -p 22 -u root -f passwords.txt
+  
 <b>Files containing IP addresses and passwords can be found on Canvas.</b>
   
 <hr>
@@ -114,9 +122,13 @@ been found then print a message to alert the user and print the working combinat
 <hr>
 <b>Part 8 – Deploying files (5%)</b>
 Modify your code to accept a new command line parameter:
+
   -d -> File to deploy on target machine
+  
 It would be used like:
+
   ./net_attack.py -t ip_list.txt -p 22 -u root -f passwords.txt -d test.txt
+  
 Modify your code so that when a working username and password combination is found for Telnet
 or SSH your script will connect to the target host and run commands that will cause the file specified
 by the user with the -d option to be transferred to the target host.
@@ -126,9 +138,13 @@ over the network.
 <hr>
 <b>Part 9 – Self-Propagation (10%)</b>
 Modify your code to accept a new command line parameter:
+
   -L -> Local scan
+  
   -P -> Propagate
+  
 It would be used like:
+
   ./net_attack.py -L -p 22,23 -u root -f passwords.txt -P
   
 Modify your code so that instead of a list of IP addresses, the user can use the -L option to have the
@@ -139,10 +155,16 @@ octet changes). Your script should then scan each of the IP addresses in your ge
 The -P option will cause both the net_attack.py script and the passwords.txt files to be copied to the
 target host.
 When a working username and password combination is found for Telnet or SSH your script will
+
   - Connect to the Telnet or SSH server
+  
   - Detect whether this script is already on the server. If it is then skip to next target
+  
   - Deploy itself to the target server
+  
   - Deploy the list of passwords to the target server
+  
   - Run the net_attack.py script on the target with the -L and -P options
+  
 To test this, try targeting one IP address initially from the attacker, and use the Mininet terminal
 windows to observe whether the script is being propagated to other hosts in the Mininet network.
