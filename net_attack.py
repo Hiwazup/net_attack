@@ -22,6 +22,7 @@ def main():
 
     ip_list = read_ip_list(ip_file)
     print("[+] Determining which IP addresses are reachable...")
+    
     ip_list = [ip for ip in ip_list if is_reachable(ip)]
     if not ip_list:
         print("[!] No reachable IP addresses found from the provided list")
@@ -38,6 +39,7 @@ def main():
     if "-d" in arguments:
         deployment_file = arguments[arguments.index("-d") + 1]
         deploy_file_to_server(deployment_file)
+
     print("[+] Received %d response(s). Beginning attack!\n" % len(ip_list))
     for ip in ip_list:
         print("********** %s **********" % ip)
