@@ -46,13 +46,13 @@ def main():
         help("Missing target argument")
 
     if not ip_list:
-        print("[!] No reachable IP addresses found from the provided list")
+        print("[!] No reachable IP addresses found.")
         exit()
 
     if "-d" in arguments:
         if self_propagate:
             help("-d argument cannot be used with -L and -P")
-        deployment_file = get_parameter(arguments, "-d")  # arguments[arguments.index("-d") + 1]
+        deployment_file = get_parameter(arguments, "-d")
         deploy_file_to_server(deployment_file)
 
     deployed = False
