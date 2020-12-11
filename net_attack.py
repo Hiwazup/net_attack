@@ -318,7 +318,7 @@ def send_command_over_channel(channel, command, check_output=False, output=None)
             counter = counter + 1
 
         command_response = channel.recv(1024)
-        if check_output and output not in command_response:
+        if check_output and encode_in_ascii(output) not in command_response:
             return False
 
         time.sleep(0.1)
