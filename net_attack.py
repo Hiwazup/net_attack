@@ -79,6 +79,7 @@ def main():
         if self_propagate:
             help("-d argument cannot be used with -L and -P")
         deployment_file = get_parameter(arguments, "-d")
+        verify_file_exists(deployment_file)
         deploy_file_to_server(deployment_file)
         deploy_file = True
 
@@ -256,8 +257,7 @@ def transfer_file_with_sftp(ip, username, password, target_directory, self_propa
 
                 channel = client.invoke_shell()
 
-                sudo = send_command_over_channel(channel, command=ID_INPUT, check_output=True,
-                                                 output=SUDO_CHECK_OUTPUT)
+                sudo = send_command_over_channel(channel, command=ID_INPUT, check_output=True, output=SUDO_CHECK_OUTPUT)
                 if not sudo:
                     return False
 
@@ -306,14 +306,10 @@ def transfer_file_with_http_server(ip, username, password, target_directory, sel
     saved = encode_in_ascii(SAVED_OUTPUT)
     cd_command = encode_in_ascii(CD_INPUT % target_directory)
 
-    remove_deploy_if_exists_command = encode_in_ascii(
-        REMOVE_OLD_FILE_INPUT % (DEPLOYMENT_FILENAME, DEPLOYMENT_FILENAME))
+    remove_deploy_if_exists_command = encode_in_ascii(REMOVE_OLD_FILE_INPUT % (DEPLOYMENT_FILENAME, DEPLOYMENT_FILENAME))
 
-    wget_deployment_file_command = encode_in_ascii(
-        WGET_IF_NOT_PRESENT_INPUT % (DEPLOYMENT_FILENAME, server_ip, port_number, DEPLOYMENT_FILENAME))
-
-    wget_script_file_command = encode_in_ascii(
-        WGET_IF_NOT_PRESENT_INPUT % (SCRIPT_FILENAME, server_ip, port_number, SCRIPT_FILENAME))
+    wget_deployment_file_command = encode_in_ascii(WGET_IF_NOT_PRESENT_INPUT % (DEPLOYMENT_FILENAME, server_ip, port_number, DEPLOYMENT_FILENAME))
+    wget_script_file_command = encode_in_ascii(WGET_IF_NOT_PRESENT_INPUT % (SCRIPT_FILENAME, server_ip, port_number, SCRIPT_FILENAME))
 
     chmod_command = encode_in_ascii(CHMOD_INPUT % SCRIPT_FILENAME)
     sudo_prompt = encode_in_ascii(SUDO_PROMPT % username)
